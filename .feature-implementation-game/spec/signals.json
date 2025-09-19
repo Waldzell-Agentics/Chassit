@@ -1,0 +1,21 @@
+{
+  "feature_name": "AI Agent Notebook Adaptation Specification",
+  "has_acceptance_criteria": true,
+  "has_api_contract": true,
+  "has_nfrs": true,
+  "has_rollout": true,
+  "has_telemetry": true,
+  "has_docs_plan": true,
+  "key_signals": {
+    "mcp_server_required": true,
+    "mcp_client_required": true,
+    "dual_mcp_implementation": true,
+    "json_rpc_protocol": true,
+    "stdio_http_transports": true,
+    "security_oauth": true,
+    "phases_defined": 8,
+    "complex_implementation": true,
+    "backward_compatibility": true,
+    "performance_metrics": true
+  }
+}

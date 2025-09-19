@@ -46,3 +46,9 @@ srcbook/lib/**/*
 docs/
 
 vite.config.ts.timestamp-*.mjs
+
+localmcp/
+
+.claude/
+
+cc_mcp_config.json

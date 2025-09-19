@@ -1,0 +1,23 @@
+{
+  "feature": "AI Agent Notebook Adaptation",
+  "deadline": "2025-01-26T17:00:00Z",
+  "risk_level": "high",
+  "rollout_strategy": "flagged",
+  "phase": 0,
+  "budgets": {
+    "error_budget": 0.02,
+    "performance_budget_ms": 30,
+    "oncall_load_budget_pts": 3
+  },
+  "slo": {
+    "availability": 0.999,
+    "p95_latency_ms": 250
+  },
+  "flags": {
+    "name": "feature.ai_agent_notebook_adaptation",
+    "default": false,
+    "kill_switch": true
+  },
+  "stakeholders": ["product_owner", "tech_lead", "sre", "qa", "docs", "security"],
+  "artifacts": {}
+}
