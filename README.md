@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://srcbook.com">Online app builder</a> ·
+  <a href="https://srcbook.com">Website</a> ·
   <a href="https://discord.gg/shDEGBSe2d">Discord</a> ·
   <a href="https://www.youtube.com/@srcbook">Youtube</a> ·
   <a href="https://hub.srcbook.com">Hub</a> 
@@ -18,27 +18,11 @@
 
 ## Srcbook
 
-Srcbook is a TypeScript-centric app development platform, with 2 main products:
-
-- an AI app builder (also available [hosted online](https://srcbook.com/))
-- a TypeScript notebook
+Srcbook is a TypeScript-centric notebook that lets you explore ideas with AI-assisted TypeScript code.
 
 Srcbook is open-source (apache2) and runs locally on your machine. You'll need to bring your own API key for AI usage (we strongly recommend Anthropic with `claude-3-5-sonnet-latest`).
 
 ## Features
-
-### App Builder
-
-- AI app builder for TypeScript
-- Create, edit and run web apps
-- Use AI to generate the boilerplate, modify the code, and fix things
-- Edit the app with a hot-reloading web preview
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://i.imgur.com/lLJPZOs.png">
-  <source media="(prefers-color-scheme: light)" srcset="https://i.imgur.com/k4xAyCQ.png">
-  <img alt="Example Srcbook" src="https://i.imgur.com/k4xAyCQ.png">
-</picture>
 
 ### Notebooks
 
