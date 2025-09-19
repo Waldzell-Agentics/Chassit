@@ -25,14 +25,21 @@ This document outlines the architectural changes and feature additions needed to
 
 ### Overview
 
-The Model Context Protocol (MCP) provides a standardized way for AI agents to interact with external tools and data sources. By implementing Chassit as an MCP server, we can expose Srcbook's notebook capabilities through a well-defined protocol that AI agents can easily consume.
+The Model Context Protocol (MCP) provides a standardized way for AI agents to interact with external tools and data sources. Chassit will implement MCP in two complementary ways:
+
+1. **As an MCP Server**: Exposing Srcbook's notebook capabilities through a well-defined protocol that AI agents can easily consume
+2. **As an MCP Client**: Enabling the AI agent that powers Chassit to connect to external MCP servers, dramatically expanding its capabilities
 
 ### MCP Architecture in Chassit Context
 
 MCP operates on a client-host-server model:
-- **Host**: The AI application (e.g., Claude, GPT) that manages client connections
+- **Host**: The AI application (e.g., Claude, GPT) or Chassit itself when acting as a host
 - **Client**: MCP client library that maintains stateful sessions with servers
-- **Server**: Chassit MCP server exposing notebook functionalities
+- **Server**: Either Chassit MCP server exposing notebook functionalities, or external MCP servers that Chassit connects to
+
+This dual implementation creates a powerful ecosystem where Chassit can both:
+- Serve notebook capabilities to external AI agents
+- Leverage external MCP servers to enhance its own AI agent's capabilities
 
 ### MCP Server Implementation
 
@@ -273,6 +280,583 @@ interface ChassitAuth {
   // Protected resource access
   validateToken(token: string): Promise<boolean>
   checkPermissions(token: string, resource: string): Promise<boolean>
+}
+```
+
+### MCP Client Implementation
+
+Chassit will also function as an MCP client, allowing its internal AI agent to connect to and utilize external MCP servers. This dramatically expands the capabilities available to notebooks by providing access to specialized tools, data sources, and services.
+
+#### 1. Client Architecture
+
+##### 1.1 Multi-Server Management
+Chassit's MCP client will manage connections to multiple MCP servers simultaneously:
+
+```typescript
+interface MCPClientManager {
+  // Server registry
+  servers: Map<string, MCPServerConnection>
+  
+  // Connection management
+  connectServer(config: ServerConfig): Promise<MCPServerConnection>
+  disconnectServer(serverId: string): Promise<void>
+  reconnectServer(serverId: string): Promise<void>
+  
+  // Server discovery
+  discoverServers(): Promise<ServerInfo[]>
+  validateServer(url: string): Promise<ServerCapabilities>
+  
+  // Load balancing for redundant servers
+  selectServer(capability: string): MCPServerConnection
+}
+
+interface ServerConfig {
+  id: string
+  name: string
+  transport: 'stdio' | 'http'
+  endpoint?: string  // For HTTP transport
+  command?: string   // For stdio transport
+  args?: string[]    // For stdio transport
+  auth?: AuthConfig
+  autoConnect: boolean
+  retryPolicy?: RetryPolicy
+}
+```
+
+##### 1.2 Transport Layer Implementation
+
+Support for both stdio and HTTP transports:
+
+```typescript
+interface TransportManager {
+  // Stdio transport for local servers
+  createStdioTransport(command: string, args: string[]): StdioTransport
+  
+  // HTTP transport for remote servers
+  createHttpTransport(endpoint: string, auth?: AuthConfig): HttpTransport
+  
+  // Transport abstraction
+  send(transport: Transport, message: JSONRPCMessage): Promise<void>
+  receive(transport: Transport): AsyncIterator<JSONRPCMessage>
+  
+  // Connection health
+  ping(transport: Transport): Promise<boolean>
+  getMetrics(transport: Transport): ConnectionMetrics
+}
+```
+
+#### 2. Client Capabilities
+
+##### 2.1 Elicitation Support
+Enable MCP servers to request information from users or the AI agent:
+
+```typescript
+interface ElicitationHandler {
+  // Handle server elicitation requests
+  handleElicitation(request: ElicitationRequest): Promise<ElicitationResponse>
+  
+  // Elicitation strategies
+  strategies: {
+    userPrompt: (question: string) => Promise<string>
+    aiGeneration: (prompt: string, context: any) => Promise<string>
+    formInput: (fields: FormField[]) => Promise<Record<string, any>>
+    fileSelection: (filter: FileFilter) => Promise<string[]>
+  }
+  
+  // Context injection
+  injectContext(request: ElicitationRequest): ElicitationRequest
+  validateResponse(response: any, schema: JSONSchema): boolean
+}
+
+interface ElicitationRequest {
+  method: 'elicitation/requestUser' | 'elicitation/requestAI'
+  params: {
+    prompt: string
+    context?: any
+    schema?: JSONSchema
+    timeout?: number
+  }
+}
+```
+
+##### 2.2 Sampling Implementation
+Allow MCP servers to request LLM completions through Chassit:
+
+```typescript
+interface SamplingProvider {
+  // Handle sampling requests from MCP servers
+  handleSamplingRequest(request: SamplingRequest): Promise<SamplingResponse>
+  
+  // LLM configuration
+  models: {
+    default: string
+    available: string[]
+    limits: Record<string, ModelLimits>
+  }
+  
+  // Sampling methods
+  createMessage(params: CreateMessageParams): Promise<Message>
+  streamMessage(params: CreateMessageParams): AsyncIterator<MessageChunk>
+  
+  // Token management
+  countTokens(text: string, model: string): number
+  enforceTokenLimit(text: string, limit: number): string
+  
+  // Safety and filtering
+  filterContent(message: Message): Message
+  checkSafety(content: string): SafetyCheck
+}
+
+interface CreateMessageParams {
+  messages: Message[]
+  modelPreferences?: ModelPreferences
+  systemPrompt?: string
+  includeContext?: string
+  maxTokens?: number
+  temperature?: number
+  stopSequences?: string[]
+  metadata?: Record<string, any>
+}
+```
+
+##### 2.3 Roots Management
+Specify file system access boundaries for MCP servers:
+
+```typescript
+interface RootsManager {
+  // Define accessible paths for servers
+  roots: Map<string, RootConfig>
+  
+  // Root configuration
+  addRoot(serverId: string, path: string, permissions: RootPermissions): void
+  removeRoot(serverId: string, path: string): void
+  updatePermissions(serverId: string, path: string, permissions: RootPermissions): void
+  
+  // Access control
+  validateAccess(serverId: string, path: string, operation: FileOperation): boolean
+  resolvePath(serverId: string, relativePath: string): string
+  
+  // Sandboxing
+  createSandbox(serverId: string): SandboxedFileSystem
+  
+  // Monitoring
+  trackAccess(serverId: string, path: string, operation: FileOperation): void
+  getAccessLog(serverId: string): AccessLog[]
+}
+
+interface RootConfig {
+  path: string
+  permissions: RootPermissions
+  sandbox: boolean
+  quotas?: {
+    maxFiles?: number
+    maxSizeBytes?: number
+    maxOperationsPerMinute?: number
+  }
+}
+
+interface RootPermissions {
+  read: boolean
+  write: boolean
+  delete: boolean
+  execute: boolean
+  list: boolean
+}
+```
+
+#### 3. Client Lifecycle Management
+
+##### 3.1 Initialization Protocol
+Proper initialization sequence for MCP client connections:
+
+```typescript
+interface ClientLifecycle {
+  // Initialization phase
+  async initialize(server: ServerConfig): Promise<InitializeResult> {
+    // 1. Establish transport connection
+    const transport = await this.createTransport(server)
+    
+    // 2. Send initialize request
+    const initRequest: InitializeRequest = {
+      jsonrpc: '2.0',
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {
+          elicitation: { enabled: true },
+          sampling: { 
+            enabled: true,
+            models: ['claude-3-opus', 'gpt-4', 'llama-3']
+          },
+          roots: {
+            enabled: true,
+            listChanged: true
+          }
+        },
+        clientInfo: {
+          name: 'chassit',
+          version: '1.0.0'
+        }
+      }
+    }
+    
+    // 3. Receive server capabilities
+    const response = await transport.sendRequest(initRequest)
+    
+    // 4. Send initialized notification
+    await transport.sendNotification({
+      jsonrpc: '2.0',
+      method: 'initialized'
+    })
+    
+    return response
+  }
+  
+  // Operation phase
+  async executeServerTool(serverId: string, tool: string, args: any): Promise<any>
+  async fetchServerResource(serverId: string, uri: string): Promise<any>
+  async invokeServerPrompt(serverId: string, prompt: string, args: any): Promise<any>
+  
+  // Shutdown phase
+  async shutdown(serverId: string, timeout: number = 5000): Promise<void>
+}
+```
+
+##### 3.2 Error Handling and Recovery
+
+```typescript
+interface ErrorRecovery {
+  // Error classification
+  classifyError(error: MCPError): ErrorType
+  
+  // Recovery strategies
+  strategies: {
+    retry: RetryStrategy
+    reconnect: ReconnectStrategy
+    fallback: FallbackStrategy
+    escalate: EscalationStrategy
+  }
+  
+  // Circuit breaker pattern
+  circuitBreaker: {
+    isOpen(serverId: string): boolean
+    trip(serverId: string): void
+    reset(serverId: string): void
+    halfOpen(serverId: string): void
+  }
+  
+  // Error reporting
+  reportError(error: MCPError, context: ErrorContext): void
+  getErrorMetrics(serverId: string): ErrorMetrics
+}
+```
+
+#### 4. Integration with Notebook Cells
+
+##### 4.1 MCP Tool Cells
+New cell type for invoking MCP server tools:
+
+```typescript
+interface MCPToolCell {
+  type: 'mcp-tool'
+  serverId: string
+  tool: string
+  arguments: any
+  options: {
+    timeout?: number
+    retries?: number
+    cache?: boolean
+    transformOutput?: (output: any) => any
+  }
+}
+
+// Example usage in a notebook
+const mcpCell: MCPToolCell = {
+  type: 'mcp-tool',
+  serverId: 'github-server',
+  tool: 'github.search.repositories',
+  arguments: {
+    query: 'language:typescript stars:>1000',
+    sort: 'stars',
+    limit: 10
+  }
+}
+```
+
+##### 4.2 MCP Resource Cells
+Cells for fetching and displaying MCP resources:
+
+```typescript
+interface MCPResourceCell {
+  type: 'mcp-resource'
+  serverId: string
+  uri: string
+  options: {
+    autoRefresh?: boolean
+    refreshInterval?: number
+    transform?: (data: any) => any
+    display?: 'json' | 'table' | 'chart' | 'custom'
+  }
+}
+```
+
+##### 4.3 Dynamic Server Discovery
+Cells can dynamically discover and connect to MCP servers:
+
+```typescript
+interface MCPDiscoveryCell {
+  type: 'mcp-discovery'
+  discovery: {
+    method: 'manual' | 'registry' | 'broadcast' | 'dns'
+    filter?: ServerFilter
+    autoConnect?: boolean
+  }
+  onDiscover: (servers: ServerInfo[]) => void
+}
+```
+
+#### 5. Client Utilities
+
+##### 5.1 Progress Tracking
+Monitor long-running operations from MCP servers:
+
+```typescript
+interface ProgressTracker {
+  // Track operation progress
+  operations: Map<string, OperationProgress>
+  
+  // Progress notifications
+  onProgress(serverId: string, handler: ProgressHandler): Unsubscribe
+  
+  // Progress aggregation
+  getOverallProgress(): AggregatedProgress
+  estimateCompletion(operationId: string): Date | null
+  
+  // Visualization
+  renderProgressBar(operationId: string): string
+  streamProgress(operationId: string): AsyncIterator<ProgressUpdate>
+}
+
+interface OperationProgress {
+  id: string
+  serverId: string
+  operation: string
+  progress: number  // 0-100
+  message?: string
+  startTime: Date
+  estimatedCompletion?: Date
+  subOperations?: OperationProgress[]
+}
+```
+
+##### 5.2 Cancellation Support
+Cancel in-progress operations:
+
+```typescript
+interface CancellationManager {
+  // Cancellation tokens
+  createToken(): CancellationToken
+  
+  // Cancel operations
+  cancelOperation(operationId: string): Promise<void>
+  cancelAllForServer(serverId: string): Promise<void>
+  
+  // Cancellation propagation
+  propagateCancel(token: CancellationToken, servers: string[]): Promise<void>
+  
+  // Cleanup
+  onCancel(operationId: string, cleanup: () => void): void
+}
+```
+
+##### 5.3 Connection Health Monitoring
+
+```typescript
+interface HealthMonitor {
+  // Ping mechanism
+  pingInterval: number
+  autoPing: boolean
+  
+  // Health checks
+  checkHealth(serverId: string): Promise<HealthStatus>
+  checkAllServers(): Promise<Map<string, HealthStatus>>
+  
+  // Metrics collection
+  getLatency(serverId: string): number
+  getUptime(serverId: string): number
+  getRequestRate(serverId: string): number
+  
+  // Alerts
+  onUnhealthy(serverId: string, handler: (status: HealthStatus) => void): Unsubscribe
+  setHealthThresholds(thresholds: HealthThresholds): void
+}
+```
+
+#### 6. Security and Sandboxing
+
+##### 6.1 Server Validation
+
+```typescript
+interface ServerValidator {
+  // Certificate validation for HTTPS
+  validateCertificate(cert: Certificate): boolean
+  
+  // Server identity verification
+  verifyServerIdentity(server: ServerInfo): Promise<boolean>
+  
+  // Capability validation
+  validateCapabilities(caps: ServerCapabilities): ValidationResult
+  
+  // Trust management
+  trustStore: {
+    add(serverId: string, cert: Certificate): void
+    remove(serverId: string): void
+    isTrusted(serverId: string): boolean
+  }
+}
+```
+
+##### 6.2 Request Filtering
+
+```typescript
+interface RequestFilter {
+  // Content filtering
+  filterOutgoing(request: MCPRequest): MCPRequest
+  filterIncoming(response: MCPResponse): MCPResponse
+  
+  // Sensitive data protection
+  redactSecrets(data: any): any
+  encryptSensitive(data: any): any
+  
+  // Rate limiting
+  rateLimit: {
+    check(serverId: string, operation: string): boolean
+    increment(serverId: string, operation: string): void
+    reset(serverId: string): void
+  }
+}
+```
+
+#### 7. Client Configuration
+
+##### 7.1 Configuration Schema
+
+```typescript
+interface MCPClientConfig {
+  // Global settings
+  global: {
+    maxConnections: number
+    defaultTimeout: number
+    retryPolicy: RetryPolicy
+    logLevel: 'debug' | 'info' | 'warn' | 'error'
+  }
+  
+  // Server configurations
+  servers: ServerConfig[]
+  
+  // Security settings
+  security: {
+    requireHttps: boolean
+    validateCertificates: boolean
+    allowedDomains: string[]
+    blockedDomains: string[]
+  }
+  
+  // Performance tuning
+  performance: {
+    connectionPoolSize: number
+    requestQueueSize: number
+    cacheSize: number
+    compressionEnabled: boolean
+  }
+  
+  // Feature flags
+  features: {
+    elicitation: boolean
+    sampling: boolean
+    roots: boolean
+    progressTracking: boolean
+    cancellation: boolean
+  }
+}
+```
+
+##### 7.2 Dynamic Configuration
+
+```typescript
+interface DynamicConfig {
+  // Hot reload configuration
+  reloadConfig(): Promise<void>
+  watchConfig(path: string): void
+  
+  // Runtime updates
+  updateServer(serverId: string, updates: Partial<ServerConfig>): void
+  toggleFeature(feature: string, enabled: boolean): void
+  
+  // Configuration validation
+  validate(config: MCPClientConfig): ValidationResult
+  migrate(oldConfig: any): MCPClientConfig
+}
+```
+
+### MCP Client Use Cases
+
+The MCP client implementation enables Chassit notebooks to leverage a vast ecosystem of MCP servers, dramatically expanding capabilities:
+
+#### Example MCP Server Integrations
+
+1. **Data Sources**
+   - Database servers (PostgreSQL, MongoDB, Redis)
+   - API gateways (REST, GraphQL, gRPC)
+   - File systems (S3, GCS, local)
+   - Real-time streams (Kafka, WebSockets)
+
+2. **Development Tools**
+   - Version control (Git operations)
+   - CI/CD pipelines (Jenkins, GitHub Actions)
+   - Container orchestration (Docker, Kubernetes)
+   - Code analysis (linting, security scanning)
+
+3. **AI/ML Services**
+   - Model serving (TensorFlow, PyTorch)
+   - Vector databases (Pinecone, Weaviate)
+   - Embedding services (OpenAI, Cohere)
+   - Fine-tuning platforms
+
+4. **Business Tools**
+   - CRM systems (Salesforce, HubSpot)
+   - Analytics platforms (Google Analytics, Mixpanel)
+   - Communication tools (Slack, Email)
+   - Payment processors (Stripe, PayPal)
+
+5. **Specialized Domains**
+   - Scientific computing (NumPy, SciPy servers)
+   - Bioinformatics tools
+   - Financial data providers
+   - IoT device management
+
+#### Workflow Examples
+
+```typescript
+// Example 1: Data Analysis Workflow
+// Connect to multiple MCP servers for comprehensive analysis
+const workflow = {
+  steps: [
+    { server: 'postgres-mcp', tool: 'query', args: { sql: 'SELECT * FROM users' } },
+    { server: 'pandas-mcp', tool: 'analyze', args: { method: 'describe' } },
+    { server: 'plotly-mcp', tool: 'visualize', args: { type: 'scatter' } },
+    { server: 'slack-mcp', tool: 'notify', args: { channel: '#data-insights' } }
+  ]
+}
+
+// Example 2: AI-Powered Development
+const aiWorkflow = {
+  steps: [
+    { server: 'github-mcp', tool: 'clone_repo', args: { repo: 'user/project' } },
+    { server: 'openai-mcp', tool: 'analyze_code', args: { task: 'review' } },
+    { server: 'sonar-mcp', tool: 'scan_security', args: { language: 'typescript' } },
+    { server: 'docker-mcp', tool: 'build_image', args: { dockerfile: './Dockerfile' } }
+  ]
 }
 ```
 
@@ -572,31 +1156,43 @@ interface ToolIntegration {
 3. JSON-RPC message handling
 4. Capability negotiation and lifecycle management
 
-### Phase 2: MCP Features (Weeks 4-6)
+### Phase 2: MCP Client Foundation (Weeks 4-6)
+1. Basic MCP client implementation with transport abstraction
+2. Client lifecycle management (initialize, operate, shutdown)
+3. Multi-server connection management
+4. Error handling and recovery mechanisms
+
+### Phase 3: MCP Server Features (Weeks 7-9)
 1. Resource exposure (notebook state, cells, outputs)
 2. Streaming support for real-time outputs
 3. Prompts implementation for common workflows
 4. HTTP transport with SSE support
 
-### Phase 3: Enhanced MCP Integration (Weeks 7-9)
-1. OAuth 2.1 authorization for HTTP transport
-2. Resource subscriptions for state changes
-3. Advanced tool implementations (AI generation, package management)
-4. Error handling and recovery mechanisms
+### Phase 4: MCP Client Capabilities (Weeks 10-12)
+1. Elicitation support for server requests
+2. Sampling implementation for LLM completions
+3. Roots management for file system access control
+4. Progress tracking and cancellation support
 
-### Phase 4: Core API Extensions (Weeks 10-12)
+### Phase 5: Enhanced MCP Integration (Weeks 13-15)
+1. OAuth 2.1 authorization for HTTP transport
+2. MCP tool cells and resource cells in notebooks
+3. Dynamic server discovery and auto-connection
+4. Security sandboxing and request filtering
+
+### Phase 6: Core API Extensions (Weeks 16-18)
 1. RESTful API for operations not covered by MCP
 2. WebSocket support for real-time updates
 3. Batch operations and parallel execution
 4. State persistence and snapshots
 
-### Phase 5: Agent-Specific Features (Weeks 13-16)
+### Phase 7: Agent-Specific Features (Weeks 19-21)
 1. Tool cells for custom function definitions
 2. Test cells with assertion frameworks
 3. Enhanced introspection and debugging
 4. Multi-agent session support
 
-### Phase 6: Advanced Capabilities (Weeks 17-20)
+### Phase 8: Advanced Capabilities (Weeks 22-24)
 1. Smart package management with vulnerability scanning
 2. External integrations (databases, APIs, cloud services)
 3. Monitoring, metrics, and observability
@@ -625,46 +1221,89 @@ interface ToolIntegration {
 ## Migration Strategy
 
 ### MCP Integration Approach
-- **Parallel Development**: Implement MCP server alongside existing Srcbook functionality
-- **Non-Breaking Changes**: MCP server runs as optional component
+- **Dual Implementation**: Implement both MCP server and client capabilities
+- **Parallel Development**: Build MCP components alongside existing Srcbook functionality
+- **Non-Breaking Changes**: MCP features run as optional components
 - **Progressive Enhancement**: Gradually expose more features through MCP
-- **Testing Strategy**: Validate MCP operations against existing API
+- **Testing Strategy**: Validate both server and client operations
+
+### MCP Server Migration
+- **Server as Optional Component**: MCP server activated via opt-in flag
+- **API Compatibility**: Existing APIs remain functional
+- **Feature Parity**: All notebook operations available through MCP
+- **Performance Testing**: Benchmark MCP server vs direct API
+
+### MCP Client Integration
+- **Gradual Adoption**: Start with connecting to simple MCP servers
+- **Server Registry**: Maintain curated list of compatible MCP servers
+- **Capability Detection**: Auto-discover server features
+- **Fallback Mechanisms**: Graceful degradation when servers unavailable
 
 ### Backward Compatibility
 - Maintain existing web UI functionality
 - Support current .src.md format
 - Preserve existing session structure
 - CLI commands remain unchanged
-- MCP server activated via opt-in flag
+- MCP features opt-in via configuration
 
 ### Data Migration
 - Automated conversion of existing notebooks
 - Session state preservation
 - Configuration migration tools
 - Rollback capabilities
+- MCP server connection settings migration
 
-### MCP Client Testing
-Develop test clients to validate MCP server:
+### Testing Strategy
+
+#### MCP Server Testing
 1. Simple stdio client for basic operations
 2. HTTP client with streaming support
 3. Integration tests with popular AI frameworks
 4. Performance benchmarks for MCP vs direct API
 
+#### MCP Client Testing
+1. Mock MCP servers for unit testing
+2. Integration with reference MCP server implementations
+3. Multi-server connection stress testing
+4. Security and sandboxing validation
+5. Elicitation and sampling capability testing
+
 ## Conclusion
 
-Transforming Srcbook into Chassit through Model Context Protocol integration provides a standardized, agent-native interface while preserving the tool's core strengths. The MCP server approach offers several key advantages:
+Transforming Srcbook into Chassit through comprehensive Model Context Protocol integration provides a powerful, bidirectional ecosystem for AI agent interaction. The dual MCP implementation strategy offers unique advantages:
 
-1. **Standardization**: Leverages an established protocol that AI agents already understand
+### As an MCP Server
+1. **Standardization**: Exposes notebook capabilities through an established protocol
 2. **Interoperability**: Compatible with any MCP-compliant AI system
-3. **Flexibility**: Supports both subprocess (stdio) and network (HTTP) deployment models
+3. **Flexibility**: Supports both subprocess (stdio) and network (HTTP) deployment
 4. **Security**: Built-in authorization framework for secure multi-tenant operation
-5. **Extensibility**: Easy to add new tools, resources, and prompts as capabilities expand
+5. **Extensibility**: Easy to add new tools, resources, and prompts
 
-The phased implementation prioritizes MCP server development first, establishing a solid foundation for agent interaction before adding advanced features. This approach ensures rapid time-to-value while maintaining architectural flexibility for future enhancements.
+### As an MCP Client
+1. **Capability Expansion**: Connect to external MCP servers for specialized tools
+2. **Ecosystem Integration**: Leverage the growing MCP server ecosystem
+3. **Dynamic Enhancement**: Add capabilities without modifying core code
+4. **Security Boundaries**: Sandboxed access to external resources
+5. **Intelligent Orchestration**: Coordinate multiple MCP servers for complex tasks
 
-By combining MCP's standardized protocol with Srcbook's powerful notebook execution engine, Chassit will provide AI agents with an intuitive, reliable, and feature-rich environment for exploring, prototyping, and executing complex computational tasks autonomously.
+### Synergistic Benefits
+The combination of server and client capabilities creates a powerful multiplier effect:
+- **Composability**: Chain multiple MCP servers through Chassit as an intermediary
+- **Intelligence Amplification**: AI agents using Chassit gain access to both notebook capabilities and external MCP servers
+- **Workflow Automation**: Create complex workflows spanning multiple tools and services
+- **Progressive Enhancement**: Start simple and add capabilities as needed
 
-## Appendix: MCP Server CLI Interface
+The phased implementation prioritizes foundational MCP components first, then progressively adds advanced features. This approach ensures:
+- Rapid initial deployment with basic MCP functionality
+- Continuous value delivery through incremental enhancements
+- Architectural flexibility for future innovations
+- Backward compatibility with existing Srcbook deployments
+
+By implementing both MCP server and client capabilities, Chassit becomes not just a notebook environment, but a comprehensive AI agent platform that can both serve and consume capabilities, creating a rich ecosystem for autonomous computational exploration, prototyping, and execution.
+
+## Appendix: MCP CLI Interfaces
+
+### MCP Server CLI
 
 ```bash
 # Start MCP server with stdio transport (for single agent)
@@ -680,13 +1319,88 @@ chassit mcp-server --enable-tools --enable-resources --enable-prompts
 chassit mcp-server --dev --log-level debug
 
 # Configuration file support
-chassit mcp-server --config mcp-config.json
+chassit mcp-server --config mcp-server-config.json
+```
+
+### MCP Client CLI
+
+```bash
+# Connect to an MCP server via stdio
+chassit mcp-client connect --transport stdio --command "server-executable" --args "--option value"
+
+# Connect to an MCP server via HTTP
+chassit mcp-client connect --transport http --endpoint "https://api.example.com/mcp" --auth-token "xxx"
+
+# List connected MCP servers
+chassit mcp-client list
+
+# Discover available MCP servers
+chassit mcp-client discover --method registry --registry-url "https://mcp-registry.example.com"
+
+# Execute a tool from a connected server
+chassit mcp-client exec --server github-server --tool "github.search.repositories" --args '{"query": "mcp"}'
+
+# Fetch a resource from a connected server
+chassit mcp-client fetch --server data-server --uri "data://datasets/sample.json"
+
+# Interactive mode for testing
+chassit mcp-client interactive --server test-server
+
+# Manage server connections
+chassit mcp-client disconnect --server github-server
+chassit mcp-client reconnect --server github-server
+
+# Configuration management
+chassit mcp-client config add-server --config-file servers.json
+chassit mcp-client config set-default --server primary-server
+chassit mcp-client config export > mcp-client-config.json
+```
+
+### Combined MCP Operations
+
+```bash
+# Start Chassit with both MCP server and client enabled
+chassit start --enable-mcp-server --enable-mcp-client --config chassit-config.json
+
+# Run a notebook that uses MCP client connections
+chassit run notebook.src.md --mcp-servers "github-server,data-server"
+
+# Export notebook with MCP server metadata
+chassit export notebook.src.md --include-mcp-config
+
+# Validate MCP configuration
+chassit mcp validate --config mcp-config.json
+
+# Generate MCP server documentation
+chassit mcp-server docs --output docs/mcp-api.md
+
+# Test MCP integration
+chassit mcp test --server-config server.json --client-config client.json
 ```
 
 ## References
 
+### MCP Core Documentation
 - [Model Context Protocol Specification](https://modelcontextprotocol.io/specification/2025-06-18)
 - [MCP Architecture Overview](https://modelcontextprotocol.io/specification/2025-06-18/architecture)
+- [MCP Client Concepts](https://modelcontextprotocol.io/docs/learn/client-concepts)
+
+### MCP Basic Features
+- [MCP Basic Specification](https://modelcontextprotocol.io/specification/2025-06-18/basic)
+- [MCP Lifecycle Management](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle)
 - [MCP Transport Mechanisms](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)
+
+### MCP Utilities
+- [Progress Tracking](https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/progress)
+- [Cancellation Support](https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/cancellation)
+- [Ping Mechanism](https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/ping)
+
+### MCP Client Features
+- [Client Roots](https://modelcontextprotocol.io/specification/2025-06-18/client/roots)
+- [Client Sampling](https://modelcontextprotocol.io/specification/2025-06-18/client/sampling)
+- [Client Elicitation](https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation)
+
+### MCP Development Guides
+- [MCP Server Development Guide](https://github.com/cyanheads/model-context-protocol-resources/blob/main/guides/mcp-server-development-guide.md)
 - [MCP Server Implementation Guide](https://modelcontextprotocol.io/specification/2025-06-18/server)
 - [MCP Authorization Framework](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization)
