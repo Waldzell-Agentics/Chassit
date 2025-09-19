@@ -75,6 +75,42 @@ export default function program() {
       });
     });
 
+  program
+    .command('mcp-server')
+    .description('Start the Chassit MCP Server')
+    .option('--transport <type>', 'Transport type: "stdio" or "http"', 'stdio')
+    .option('--port <number>', 'Port for HTTP transport', '3000')
+    .option('--disable-tools', 'Disable MCP tools capability')
+    .option('--disable-resources', 'Disable MCP resources capability')
+    .option('--disable-prompts', 'Disable MCP prompts capability')
+    .option('--log-level <level>', 'Log level: debug, info, warn, error', 'info')
+    .action(async (options) => {
+      const args = ['--transport', options.transport];
+
+      if (options.port) args.push('--port', options.port);
+      if (options.disableTools) args.push('--disable-tools');
+      if (options.disableResources) args.push('--disable-resources');
+      if (options.disablePrompts) args.push('--disable-prompts');
+      if (options.logLevel) args.push('--log-level', options.logLevel);
+
+      const mcpServer = spawn('node', [pathTo('..', 'packages', 'api', 'mcp', 'cli.mjs'), ...args], {
+        stdio: ['inherit', 'inherit', 'inherit'],
+        env: {
+          ...process.env,
+          NODE_ENV: options.logLevel === 'debug' ? 'development' : 'production',
+        },
+      });
+
+      mcpServer.on('close', (code) => {
+        process.exit(code);
+      });
+
+      process.on('uncaughtException', (error) => {
+        console.error(error);
+        mcpServer.kill();
+      });
+    });
+
   program.parse();
 }
 
