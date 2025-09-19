@@ -1,1 +1,0 @@
-specs/ai-notebook-agent-adaptation.md is where the spec is
