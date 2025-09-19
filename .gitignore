@@ -52,3 +52,6 @@ localmcp/
 .claude/
 
 cc_mcp_config.json
+
+# Roo AI assistant directory (contains API keys)
+.roo/
