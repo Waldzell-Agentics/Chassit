@@ -52,3 +52,18 @@ localmcp/
 .claude/
 
 cc_mcp_config.json
+
+# Roo AI assistant directory (contains API keys)
+.roo/
+
+# Internal development directories
+reports/
+specs/
+.feature-implementation-game/
+trees/
+
+# Internal development files
+AGENTS.md
+CLAUDE.md
+IMPLEMENTATION_COMPARISON.md
+.roomodes
