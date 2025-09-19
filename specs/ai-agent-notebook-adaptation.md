@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This document outlines the architectural changes and feature additions needed to transform Srcbook from a human-centric TypeScript notebook into an AI agent-optimized development and execution environment. The goal is to create a tool that AI agents can use programmatically to explore, prototype, test, and execute complex multi-step computational tasks.
+This document outlines the architectural changes and feature additions needed to transform Srcbook from a human-centric TypeScript notebook into Chassit - an AI agent-optimized development and execution environment. The primary approach is to implement a Model Context Protocol (MCP) server that provides an agent-native interface to Srcbook's capabilities, enabling AI agents to programmatically explore, prototype, test, and execute complex multi-step computational tasks.
 
 ## Current State Analysis
 
@@ -21,9 +21,266 @@ This document outlines the architectural changes and feature additions needed to
 4. **TypeScript Server**: Real-time diagnostics and suggestions
 5. **Session Management**: File-based storage in ~/.srcbook directory
 
+## Model Context Protocol Integration
+
+### Overview
+
+The Model Context Protocol (MCP) provides a standardized way for AI agents to interact with external tools and data sources. By implementing Chassit as an MCP server, we can expose Srcbook's notebook capabilities through a well-defined protocol that AI agents can easily consume.
+
+### MCP Architecture in Chassit Context
+
+MCP operates on a client-host-server model:
+- **Host**: The AI application (e.g., Claude, GPT) that manages client connections
+- **Client**: MCP client library that maintains stateful sessions with servers
+- **Server**: Chassit MCP server exposing notebook functionalities
+
+### MCP Server Implementation
+
+#### 1. Core MCP Features to Expose
+
+##### 1.1 Tools
+Executable functions that allow AI agents to interact with Chassit:
+
+```typescript
+interface ChassitTools {
+  // Notebook Management
+  'chassit.notebook.create': {
+    description: 'Create a new TypeScript notebook'
+    parameters: {
+      name: string
+      language: 'typescript' | 'javascript'
+    }
+  }
+  
+  'chassit.notebook.open': {
+    description: 'Open an existing notebook session'
+    parameters: {
+      path?: string
+      sessionId?: string
+    }
+  }
+  
+  // Cell Operations
+  'chassit.cell.create': {
+    description: 'Add a new cell to the notebook'
+    parameters: {
+      sessionId: string
+      type: 'code' | 'markdown' | 'package'
+      content: string
+      position?: number
+    }
+  }
+  
+  'chassit.cell.execute': {
+    description: 'Execute a specific cell or all cells'
+    parameters: {
+      sessionId: string
+      cellId?: string
+      executeAll?: boolean
+    }
+  }
+  
+  'chassit.cell.update': {
+    description: 'Update cell content'
+    parameters: {
+      sessionId: string
+      cellId: string
+      content: string
+    }
+  }
+  
+  // Package Management
+  'chassit.npm.install': {
+    description: 'Install npm packages in the notebook'
+    parameters: {
+      sessionId: string
+      packages: string[]
+    }
+  }
+  
+  // AI Features
+  'chassit.ai.generate': {
+    description: 'Generate code cells using AI'
+    parameters: {
+      sessionId: string
+      prompt: string
+      insertAt?: number
+    }
+  }
+}
+```
+
+##### 1.2 Resources
+Structured data and content that provides context:
+
+```typescript
+interface ChassitResources {
+  'chassit://notebooks': {
+    description: 'List of available notebooks and sessions'
+    mimeType: 'application/json'
+    schema: NotebookListSchema
+  }
+  
+  'chassit://notebook/{sessionId}': {
+    description: 'Current state of a notebook session'
+    mimeType: 'application/json'
+    schema: NotebookStateSchema
+  }
+  
+  'chassit://notebook/{sessionId}/cells': {
+    description: 'All cells in a notebook'
+    mimeType: 'application/json'
+    schema: CellArraySchema
+  }
+  
+  'chassit://notebook/{sessionId}/output': {
+    description: 'Execution outputs and logs'
+    mimeType: 'text/plain'
+    streaming: true
+  }
+  
+  'chassit://diagnostics/{sessionId}': {
+    description: 'TypeScript diagnostics and errors'
+    mimeType: 'application/json'
+    schema: DiagnosticsSchema
+  }
+}
+```
+
+##### 1.3 Prompts
+Pre-defined templates for common notebook operations:
+
+```typescript
+interface ChassitPrompts {
+  'chassit.prompt.explore': {
+    description: 'Explore and analyze data'
+    arguments: [
+      { name: 'data_source', description: 'URL or file path to data' },
+      { name: 'analysis_type', description: 'Type of analysis to perform' }
+    ]
+  }
+  
+  'chassit.prompt.prototype': {
+    description: 'Create a prototype implementation'
+    arguments: [
+      { name: 'requirements', description: 'Feature requirements' },
+      { name: 'technology', description: 'Technology stack to use' }
+    ]
+  }
+  
+  'chassit.prompt.test': {
+    description: 'Generate and run tests'
+    arguments: [
+      { name: 'code', description: 'Code to test' },
+      { name: 'test_framework', description: 'Testing framework to use' }
+    ]
+  }
+}
+```
+
+#### 2. Transport Implementation
+
+Chassit will support both MCP transport mechanisms:
+
+##### 2.1 Stdio Transport
+For single-client subprocess operation:
+```bash
+chassit mcp-server --transport stdio
+```
+
+##### 2.2 Streamable HTTP Transport
+For multi-client network operation:
+```bash
+chassit mcp-server --transport http --port 3000
+```
+
+HTTP endpoints:
+- `POST /mcp/v1/messages` - JSON-RPC message handling
+- `GET /mcp/v1/sse` - Server-sent events for streaming
+
+#### 3. JSON-RPC Message Handling
+
+```typescript
+interface MCPMessage {
+  jsonrpc: '2.0'
+  id?: string | number
+  method?: string
+  params?: any
+  result?: any
+  error?: {
+    code: number
+    message: string
+    data?: any
+  }
+}
+
+// Example request
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "chassit.cell.execute",
+    "arguments": {
+      "sessionId": "abc123",
+      "cellId": "cell_1"
+    }
+  }
+}
+```
+
+#### 4. Lifecycle Management
+
+```typescript
+interface MCPLifecycle {
+  // Initialization Phase
+  initialize(): Promise<{
+    protocolVersion: string
+    capabilities: {
+      tools?: ToolsCapability
+      resources?: ResourcesCapability
+      prompts?: PromptsCapability
+      logging?: LoggingCapability
+    }
+    serverInfo: {
+      name: 'chassit'
+      version: string
+    }
+  }>
+  
+  // Operation Phase
+  handleRequest(message: MCPMessage): Promise<MCPMessage>
+  
+  // Shutdown Phase
+  shutdown(): Promise<void>
+}
+```
+
+#### 5. Security and Authorization
+
+For HTTP transport, implement OAuth 2.1:
+
+```typescript
+interface ChassitAuth {
+  // Resource server metadata
+  '/.well-known/oauth-authorization-server': {
+    issuer: string
+    authorization_endpoint: string
+    token_endpoint: string
+    token_endpoint_auth_methods_supported: string[]
+  }
+  
+  // Protected resource access
+  validateToken(token: string): Promise<boolean>
+  checkPermissions(token: string, resource: string): Promise<boolean>
+}
+```
+
 ## Proposed Adaptations for AI Agent Use
 
-### 1. Programmatic API Layer
+### 1. Enhanced Programmatic API Layer
+
+Building on the MCP foundation, provide additional REST/WebSocket APIs for advanced operations:
 
 #### 1.1 RESTful/RPC API
 Create a comprehensive API that bypasses the web UI entirely:
@@ -309,35 +566,41 @@ interface ToolIntegration {
 
 ## Implementation Priorities
 
-### Phase 1: Core API (Weeks 1-4)
-1. RESTful API for basic operations
-2. Programmatic session management
-3. Synchronous cell execution
-4. Basic error handling
+### Phase 1: MCP Server Foundation (Weeks 1-3)
+1. Basic MCP server implementation with stdio transport
+2. Core tools exposure (notebook create, open, cell operations)
+3. JSON-RPC message handling
+4. Capability negotiation and lifecycle management
 
-### Phase 2: Execution Enhancements (Weeks 5-8)
-1. Streaming execution API
-2. Resource management
-3. Parallel execution
-4. State persistence
+### Phase 2: MCP Features (Weeks 4-6)
+1. Resource exposure (notebook state, cells, outputs)
+2. Streaming support for real-time outputs
+3. Prompts implementation for common workflows
+4. HTTP transport with SSE support
 
-### Phase 3: Agent Features (Weeks 9-12)
-1. Tool cells
-2. Test cells
-3. Enhanced introspection
-4. Intelligent error recovery
+### Phase 3: Enhanced MCP Integration (Weeks 7-9)
+1. OAuth 2.1 authorization for HTTP transport
+2. Resource subscriptions for state changes
+3. Advanced tool implementations (AI generation, package management)
+4. Error handling and recovery mechanisms
 
-### Phase 4: Collaboration & Security (Weeks 13-16)
-1. Multi-agent sessions
-2. Authentication system
-3. Audit logging
-4. Sandboxing options
+### Phase 4: Core API Extensions (Weeks 10-12)
+1. RESTful API for operations not covered by MCP
+2. WebSocket support for real-time updates
+3. Batch operations and parallel execution
+4. State persistence and snapshots
 
-### Phase 5: Advanced Features (Weeks 17-20)
-1. Smart package management
-2. External integrations
-3. Monitoring and metrics
-4. Webhook support
+### Phase 5: Agent-Specific Features (Weeks 13-16)
+1. Tool cells for custom function definitions
+2. Test cells with assertion frameworks
+3. Enhanced introspection and debugging
+4. Multi-agent session support
+
+### Phase 6: Advanced Capabilities (Weeks 17-20)
+1. Smart package management with vulnerability scanning
+2. External integrations (databases, APIs, cloud services)
+3. Monitoring, metrics, and observability
+4. Webhook support for event-driven workflows
 
 ## Success Metrics
 
@@ -361,11 +624,18 @@ interface ToolIntegration {
 
 ## Migration Strategy
 
+### MCP Integration Approach
+- **Parallel Development**: Implement MCP server alongside existing Srcbook functionality
+- **Non-Breaking Changes**: MCP server runs as optional component
+- **Progressive Enhancement**: Gradually expose more features through MCP
+- **Testing Strategy**: Validate MCP operations against existing API
+
 ### Backward Compatibility
 - Maintain existing web UI functionality
 - Support current .src.md format
 - Preserve existing session structure
-- Gradual deprecation of legacy features
+- CLI commands remain unchanged
+- MCP server activated via opt-in flag
 
 ### Data Migration
 - Automated conversion of existing notebooks
@@ -373,10 +643,50 @@ interface ToolIntegration {
 - Configuration migration tools
 - Rollback capabilities
 
+### MCP Client Testing
+Develop test clients to validate MCP server:
+1. Simple stdio client for basic operations
+2. HTTP client with streaming support
+3. Integration tests with popular AI frameworks
+4. Performance benchmarks for MCP vs direct API
+
 ## Conclusion
 
-Transforming Srcbook into an AI agent-optimized tool requires significant architectural changes focused on programmatic access, reliability, and advanced execution capabilities. The proposed adaptations maintain the core strengths of the notebook paradigm while adding the robustness and features necessary for autonomous agent operation.
+Transforming Srcbook into Chassit through Model Context Protocol integration provides a standardized, agent-native interface while preserving the tool's core strengths. The MCP server approach offers several key advantages:
 
-The phased implementation approach allows for iterative development and testing, ensuring each component is production-ready before moving to the next phase. Success will be measured through concrete performance, reliability, and usability metrics that directly impact AI agent effectiveness.
+1. **Standardization**: Leverages an established protocol that AI agents already understand
+2. **Interoperability**: Compatible with any MCP-compliant AI system
+3. **Flexibility**: Supports both subprocess (stdio) and network (HTTP) deployment models
+4. **Security**: Built-in authorization framework for secure multi-tenant operation
+5. **Extensibility**: Easy to add new tools, resources, and prompts as capabilities expand
 
-This specification provides a roadmap for creating a next-generation development environment where AI agents can effectively explore, prototype, and execute complex computational tasks with minimal human intervention.
+The phased implementation prioritizes MCP server development first, establishing a solid foundation for agent interaction before adding advanced features. This approach ensures rapid time-to-value while maintaining architectural flexibility for future enhancements.
+
+By combining MCP's standardized protocol with Srcbook's powerful notebook execution engine, Chassit will provide AI agents with an intuitive, reliable, and feature-rich environment for exploring, prototyping, and executing complex computational tasks autonomously.
+
+## Appendix: MCP Server CLI Interface
+
+```bash
+# Start MCP server with stdio transport (for single agent)
+chassit mcp-server --transport stdio
+
+# Start MCP server with HTTP transport (for multiple agents)
+chassit mcp-server --transport http --port 3000 --auth oauth
+
+# Start with specific capabilities
+chassit mcp-server --enable-tools --enable-resources --enable-prompts
+
+# Development mode with verbose logging
+chassit mcp-server --dev --log-level debug
+
+# Configuration file support
+chassit mcp-server --config mcp-config.json
+```
+
+## References
+
+- [Model Context Protocol Specification](https://modelcontextprotocol.io/specification/2025-06-18)
+- [MCP Architecture Overview](https://modelcontextprotocol.io/specification/2025-06-18/architecture)
+- [MCP Transport Mechanisms](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)
+- [MCP Server Implementation Guide](https://modelcontextprotocol.io/specification/2025-06-18/server)
+- [MCP Authorization Framework](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization)
